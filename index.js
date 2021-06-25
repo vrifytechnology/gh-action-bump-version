@@ -38,47 +38,12 @@ Toolkit.run(async (tools) => {
   let version = process.env.INPUT_DEFAULT;
   let foundWord = null;
   let preid = process.env.INPUT_PREID;
-  if (
-    messages.some(
-      (message) => /^([a-zA-Z]+)(\(.+\))?(\!)\:/.test(message) || majorWords.some((word) => message.includes(word)),
-    )
-  ) {
+  if (majorWords.some((word) => event.pull_request.title.includes(word))) {
     version = 'major';
-  } else if (messages.some((message) => minorWords.some((word) => message.includes(word)))) {
+  } else if (minorWords.some((word) => event.pull_request.title.includes(word))) {
     version = 'minor';
-  } else if (
-    messages.some((message) =>
-      preReleaseWords.some((word) => {
-        if (message.includes(word)) {
-          foundWord = word;
-          return true;
-        } else {
-          return false;
-        }
-      }),
-    )
-  ) {
-    preid = foundWord.split('-')[1];
-    version = 'prerelease';
-  } else if (Array.isArray(patchWords) && patchWords.length) {
-    if (!messages.some((message) => patchWords.some((word) => message.includes(word)))) {
-      version = null;
-    }
-  }
-
-  // case: if default=prerelease, but rc-wording is also set
-  // then unset it and do not run, when no rc words found in message
-  if (version === 'prerelease' && !messages.some((message) => preReleaseWords.some((word) => message.includes(word)))) {
-    version = null;
-  }
-
-  if (version === 'prerelease' && preid) {
-    version = `${version} --preid=${preid}`;
-  }
-
-  if (version === null) {
-    tools.exit.success('No version keywords found, skipping bump.');
-    return;
+  } else {
+    version = 'patch';
   }
 
   try {
