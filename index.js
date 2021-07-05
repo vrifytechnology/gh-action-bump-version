@@ -38,9 +38,9 @@ Toolkit.run(async (tools) => {
   let version = process.env.INPUT_DEFAULT;
   let foundWord = null;
   let preid = process.env.INPUT_PREID;
-  if (majorWords.some((word) => event.pull_request.title.includes(word))) {
+  if (majorWords.some((word) => messages[0].includes(word))) {
     version = 'major';
-  } else if (minorWords.some((word) => event.pull_request.title.includes(word))) {
+  } else if (minorWords.some((word) => messages[0].includes(word))) {
     version = 'minor';
   } else {
     version = 'patch';
