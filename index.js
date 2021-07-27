@@ -18,7 +18,7 @@ Toolkit.run(async (tools) => {
 
   const messages = event.commits ? event.commits.map((commit) => commit.message + '\n' + commit.body) : [];
 
-  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || 'ci: version bump to {{version}}';
+  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || '{{version}}';
   console.log('messages:', messages);
   const commitMessageRegex = new RegExp(commitMessage.replace(/{{version}}/g, 'v\\d+\\.\\d+\\.\\d+'), 'ig');
   const isVersionBump = messages.find((message) => commitMessageRegex.test(message)) !== undefined;
