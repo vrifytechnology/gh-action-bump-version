@@ -22,8 +22,7 @@ LABEL "com.github.actions.color"="blue"
 COPY package*.json ./
 
 # Install dependencies
-RUN apt-get update
-RUN apt-get -y install git
+RUN apt-get update && apt-get -y install git && rm -rf /var/lib/apt/lists/*
 
 RUN npm ci --only=production
 
