@@ -1,117 +1,293 @@
-const { Toolkit } = require('actions-toolkit');
-const { execSync } = require('child_process');
+// test
+const { execSync, spawn } = require('child_process');
+const { existsSync } = require('fs');
+const { EOL } = require('os');
+const path = require('path');
 
 // Change working directory if user defined PACKAGEJSON_DIR
 if (process.env.PACKAGEJSON_DIR) {
   process.env.GITHUB_WORKSPACE = `${process.env.GITHUB_WORKSPACE}/${process.env.PACKAGEJSON_DIR}`;
   process.chdir(process.env.GITHUB_WORKSPACE);
+} else if (process.env.INPUT_PACKAGEJSON_DIR) {
+  process.env.GITHUB_WORKSPACE = `${process.env.GITHUB_WORKSPACE}/${process.env.INPUT_PACKAGEJSON_DIR}`;
+  process.chdir(process.env.GITHUB_WORKSPACE);
 }
 
-// Run your GitHub Action!
-Toolkit.run(async (tools) => {
-  const pkg = tools.getPackageJSON();
-  const event = tools.context.payload;
+console.log('process.env.GITHUB_WORKSPACE', process.env.GITHUB_WORKSPACE);
+const workspace = process.env.GITHUB_WORKSPACE;
+const pkg = getPackageJson();
 
-  if (!event.commits) {
+(async () => {
+  const event = process.env.GITHUB_EVENT_PATH ? require(process.env.GITHUB_EVENT_PATH) : {};
+
+  if (!event.commits && !process.env['INPUT_VERSION-TYPE']) {
     console.log("Couldn't find any commits in this event, incrementing patch version...");
   }
 
-  const messages = event.commits ? event.commits.map((commit) => commit.message + '\n' + commit.body) : [];
-
-  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || '{{version}}';
-  console.log('messages:', messages);
-  const commitMessageRegex = new RegExp(commitMessage.replace(/{{version}}/g, 'v\\d+\\.\\d+\\.\\d+'), 'ig');
-  const isVersionBump = messages.find((message) => commitMessageRegex.test(message)) !== undefined;
-
-  if (isVersionBump) {
-    tools.exit.success('No action necessary!');
+  const allowedTypes = ['major', 'minor', 'patch', 'prerelease'];
+  if (process.env['INPUT_VERSION-TYPE'] && !allowedTypes.includes(process.env['INPUT_VERSION-TYPE'])) {
+    exitFailure('Invalid version type');
     return;
   }
 
-  const majorWords = process.env['INPUT_MAJOR-WORDING'].split(',');
-  const minorWords = process.env['INPUT_MINOR-WORDING'].split(',');
-  const preReleaseWords = process.env['INPUT_RC-WORDING'].split(',');
+  const versionType = process.env['INPUT_VERSION-TYPE'];
+  const tagPrefix = process.env['INPUT_TAG-PREFIX'] || '';
+  const tagSuffix = process.env['INPUT_TAG-SUFFIX'] || '';
+  console.log('tagPrefix:', tagPrefix);
+  console.log('tagSuffix:', tagSuffix);
+  const messages = event.commits ? event.commits.map((commit) => commit.message + '\n' + commit.body) : [];
 
-  // if patch words aren't specified, any commit message qualifies as a patch
-  const patchWords = process.env['INPUT_PATCH-WORDING'] ? process.env['INPUT_PATCH-WORDING'].split(',') : null;
+  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || 'ci: version bump to {{version}}';
+  console.log('commit messages:', messages);
 
-  let version = process.env.INPUT_DEFAULT;
-  let foundWord = null;
-  let preid = process.env.INPUT_PREID;
-  if (majorWords.some((word) => event.pull_request.title.includes(word))) {
-    version = 'major';
-  } else if (minorWords.some((word) => event.pull_request.title.includes(word))) {
-    version = 'minor';
+  const bumpPolicy = process.env['INPUT_BUMP-POLICY'] || 'all';
+  const commitMessageRegex = new RegExp(
+    commitMessage.replace(/{{version}}/g, `${tagPrefix}\\d+\\.\\d+\\.\\d+${tagSuffix}`),
+    'ig',
+  );
+
+  let isVersionBump = false;
+
+  if (bumpPolicy === 'all') {
+    isVersionBump = messages.find((message) => commitMessageRegex.test(message)) !== undefined;
+  } else if (bumpPolicy === 'last-commit') {
+    isVersionBump = messages.length > 0 && commitMessageRegex.test(messages[messages.length - 1]);
+  } else if (bumpPolicy === 'ignore') {
+    console.log('Ignoring any version bumps in commits...');
   } else {
-    version = 'patch';
+    console.warn(`Unknown bump policy: ${bumpPolicy}`);
   }
 
+  if (isVersionBump) {
+    exitSuccess('No action necessary because we found a previous bump!');
+    return;
+  }
+
+  // input wordings for MAJOR, MINOR, PATCH, PRE-RELEASE
+  const majorWords = process.env['INPUT_MAJOR-WORDING'].split(',');
+  const minorWords = process.env['INPUT_MINOR-WORDING'].split(',');
+  // patch is by default empty, and '' would always be true in the includes(''), thats why we handle it separately
+  const patchWords = process.env['INPUT_PATCH-WORDING'] ? process.env['INPUT_PATCH-WORDING'].split(',') : null;
+  const preReleaseWords = process.env['INPUT_RC-WORDING'] ? process.env['INPUT_RC-WORDING'].split(',') : null;
+
+  console.log('config words:', { majorWords, minorWords, patchWords, preReleaseWords });
+
+  // get default version bump
+  let version = process.env.INPUT_DEFAULT;
+  let foundWord = null;
+  // get the pre-release prefix specified in action
+  let preid = process.env.INPUT_PREID;
+
+  // case if version-type found
+  if (versionType) {
+    version = versionType;
+  }
+  // case: if wording for MAJOR found
+  else if (
+    messages.some(
+      (message) => /^([a-zA-Z]+)(\(.+\))?(\!)\:/.test(message) || majorWords.some((word) => message.includes(word)),
+    )
+  ) {
+    version = 'major';
+  }
+  // case: if wording for MINOR found
+  else if (messages.some((message) => minorWords.some((word) => message.includes(word)))) {
+    version = 'minor';
+  }
+  // case: if wording for PATCH found
+  else if (patchWords && messages.some((message) => patchWords.some((word) => message.includes(word)))) {
+    version = 'patch';
+  }
+  // case: if wording for PRE-RELEASE found
+  else if (
+    preReleaseWords &&
+    messages.some((message) =>
+      preReleaseWords.some((word) => {
+        if (message.includes(word)) {
+          foundWord = word;
+          return true;
+        } else {
+          return false;
+        }
+      }),
+    )
+  ) {
+    if (foundWord !== '') {
+      preid = foundWord.split('-')[1];
+    }
+    version = 'prerelease';
+  }
+
+  console.log('version action after first waterfall:', version);
+
+  // case: if default=prerelease,
+  // rc-wording is also set
+  // and does not include any of rc-wording
+  // and version-type is not strictly set
+  // then unset it and do not run
+  if (
+    version === 'prerelease' &&
+    preReleaseWords &&
+    !messages.some((message) => preReleaseWords.some((word) => message.includes(word))) &&
+    !versionType
+  ) {
+    version = null;
+  }
+
+  // case: if default=prerelease, but rc-wording is NOT set
+  if (version === 'prerelease' && preid) {
+    version = `${version} --preid=${preid}`;
+  }
+
+  console.log('version action after final decision:', version);
+
+  // case: if nothing of the above matches
+  if (!version) {
+    exitSuccess('No version keywords found, skipping bump.');
+    return;
+  }
+
+  // case: if user sets push to false, to skip pushing new tag/package.json
+  const push = process.env['INPUT_PUSH'];
+  if (push === 'false' || push === false) {
+    exitSuccess('User requested to skip pushing new tag and package.json. Finished.');
+    return;
+  }
+
+  // GIT logic
   try {
     const current = pkg.version.toString();
     // set git user
-    await tools.runInWorkspace('git', [
-      'config',
-      'user.name',
-      `"${process.env.GITHUB_USER || 'Automated Version Bump'}"`,
-    ]);
-    await tools.runInWorkspace('git', [
+    await runInWorkspace('git', ['config', 'user.name', `"${process.env.GITHUB_USER || 'Automated Version Bump'}"`]);
+    await runInWorkspace('git', [
       'config',
       'user.email',
       `"${process.env.GITHUB_EMAIL || 'gh-action-bump-version@users.noreply.github.com'}"`,
     ]);
 
-    let currentBranch = /refs\/[a-zA-Z]+\/(.*)/.exec(process.env.GITHUB_REF)[1];
+    let currentBranch;
     let isPullRequest = false;
     if (process.env.GITHUB_HEAD_REF) {
       // Comes from a pull request
       currentBranch = process.env.GITHUB_HEAD_REF;
       isPullRequest = true;
+    } else {
+      currentBranch = /refs\/[a-zA-Z]+\/(.*)/.exec(process.env.GITHUB_REF)[1];
     }
     if (process.env['INPUT_TARGET-BRANCH']) {
       // We want to override the branch that we are pulling / pushing to
       currentBranch = process.env['INPUT_TARGET-BRANCH'];
     }
     console.log('currentBranch:', currentBranch);
+
+    if (!currentBranch) {
+      exitFailure('No branch found');
+      return;
+    }
+
     // do it in the current checked out github branch (DETACHED HEAD)
     // important for further usage of the package.json version
-    await tools.runInWorkspace('npm', ['version', '--allow-same-version=true', '--git-tag-version=false', current]);
-    console.log('current:', current, '/', 'version:', version);
+    await runInWorkspace('npm', ['version', '--allow-same-version=true', '--git-tag-version=false', current]);
+    console.log('current 1:', current, '/', 'version:', version);
     let newVersion = execSync(`npm version --git-tag-version=false ${version}`).toString().trim().replace(/^v/, '');
-    newVersion = `${process.env['INPUT_TAG-PREFIX']}${newVersion}`;
-    await tools.runInWorkspace('git', ['commit', '-a', '-m', commitMessage.replace(/{{version}}/g, newVersion)]);
+    console.log('newVersion 1:', newVersion);
+    newVersion = `${tagPrefix}${newVersion}${tagSuffix}`;
+    if (process.env['INPUT_SKIP-COMMIT'] !== 'true') {
+      await runInWorkspace('git', ['commit', '-a', '-m', commitMessage.replace(/{{version}}/g, newVersion)]);
+    }
 
     // now go to the actual branch to perform the same versioning
     if (isPullRequest) {
       // First fetch to get updated local version of branch
-      await tools.runInWorkspace('git', ['fetch']);
+      await runInWorkspace('git', ['fetch']);
     }
-    await tools.runInWorkspace('git', ['checkout', currentBranch]);
-    await tools.runInWorkspace('npm', ['version', '--allow-same-version=true', '--git-tag-version=false', current]);
-    console.log('current:', current, '/', 'version:', version);
+    await runInWorkspace('git', ['checkout', currentBranch]);
+    await runInWorkspace('npm', ['version', '--allow-same-version=true', '--git-tag-version=false', current]);
+    console.log('current 2:', current, '/', 'version:', version);
+    console.log('execute npm version now with the new version:', version);
     newVersion = execSync(`npm version --git-tag-version=false ${version}`).toString().trim().replace(/^v/, '');
-    newVersion = `${process.env['INPUT_TAG-PREFIX']}${newVersion}`;
-    console.log(`::set-output name=newTag::${newVersion}`);
+    // fix #166 - npm workspaces
+    // https://github.com/phips28/gh-action-bump-version/issues/166#issuecomment-1142640018
+    newVersion = newVersion.split(/\n/)[1] || newVersion;
+    console.log('newVersion 2:', newVersion);
+    newVersion = `${tagPrefix}${newVersion}${tagSuffix}`;
+    console.log(`newVersion after merging tagPrefix+newVersion+tagSuffix: ${newVersion}`);
+    // Using sh as command instead of directly echo to be able to use file redirection
+    await runInWorkspace('sh', ['-c', `echo "newTag=${newVersion}" >> $GITHUB_OUTPUT`]);
     try {
       // to support "actions/checkout@v1"
-      await tools.runInWorkspace('git', ['commit', '-a', '-m', commitMessage.replace(/{{version}}/g, newVersion)]);
+      if (process.env['INPUT_SKIP-COMMIT'] !== 'true') {
+        await runInWorkspace('git', ['commit', '-a', '-m', commitMessage.replace(/{{version}}/g, newVersion)]);
+      }
     } catch (e) {
       console.warn(
-        'git commit failed because you are using "actions/checkout@v2"; ' +
+        'git commit failed because you are using "actions/checkout@v2" or later; ' +
           'but that doesnt matter because you dont need that git commit, thats only for "actions/checkout@v1"',
       );
     }
 
     const remoteRepo = `https://${process.env.GITHUB_ACTOR}:${process.env.GITHUB_TOKEN}@github.com/${process.env.GITHUB_REPOSITORY}.git`;
     if (process.env['INPUT_SKIP-TAG'] !== 'true') {
-      await tools.runInWorkspace('git', ['tag', newVersion]);
-      await tools.runInWorkspace('git', ['push', remoteRepo, '--follow-tags']);
-      await tools.runInWorkspace('git', ['push', remoteRepo, '--tags']);
+      await runInWorkspace('git', ['tag', newVersion]);
+      if (process.env['INPUT_SKIP-PUSH'] !== 'true') {
+        await runInWorkspace('git', ['push', remoteRepo, '--follow-tags']);
+        await runInWorkspace('git', ['push', remoteRepo, '--tags']);
+      }
     } else {
-      await tools.runInWorkspace('git', ['push', remoteRepo]);
+      if (process.env['INPUT_SKIP-PUSH'] !== 'true') {
+        await runInWorkspace('git', ['push', remoteRepo]);
+      }
     }
   } catch (e) {
-    tools.log.fatal(e);
-    tools.exit.failure('Failed to bump version');
+    logError(e);
+    exitFailure('Failed to bump version');
+    return;
   }
-  tools.exit.success('Version bumped!');
-});
+  exitSuccess('Version bumped!');
+})();
+
+function getPackageJson() {
+  const pathToPackage = path.join(workspace, 'package.json');
+  if (!existsSync(pathToPackage)) throw new Error("package.json could not be found in your project's root.");
+  return require(pathToPackage);
+}
+
+function exitSuccess(message) {
+  console.info(`✔  success   ${message}`);
+  process.exit(0);
+}
+
+function exitFailure(message) {
+  logError(message);
+  process.exit(1);
+}
+
+function logError(error) {
+  console.error(`✖  fatal     ${error.stack || error}`);
+}
+
+function runInWorkspace(command, args) {
+  return new Promise((resolve, reject) => {
+    console.log('runInWorkspace | command:', command, 'args:', args);
+    const child = spawn(command, args, { cwd: workspace });
+    let isDone = false;
+    const errorMessages = [];
+    child.on('error', (error) => {
+      if (!isDone) {
+        isDone = true;
+        reject(error);
+      }
+    });
+    child.stderr.on('data', (chunk) => errorMessages.push(chunk));
+    child.on('exit', (code) => {
+      if (!isDone) {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(`${errorMessages.join('')}${EOL}${command} exited with code ${code}`);
+        }
+      }
+    });
+  });
+  //return execa(command, args, { cwd: workspace });
+}
