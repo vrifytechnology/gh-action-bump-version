@@ -37,7 +37,7 @@ const pkg = getPackageJson();
   console.log('tagSuffix:', tagSuffix);
   const messages = event.commits ? event.commits.map((commit) => commit.message + '\n' + commit.body) : [];
 
-  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || 'ci: version bump to {{version}}';
+  const commitMessage = process.env['INPUT_COMMIT-MESSAGE'] || '{{version}}';
   console.log('commit messages:', messages);
 
   const bumpPolicy = process.env['INPUT_BUMP-POLICY'] || 'all';
@@ -83,40 +83,36 @@ const pkg = getPackageJson();
     version = versionType;
   }
   // case: if wording for MAJOR found
-  else if (
-    messages.some(
-      (message) => /^([a-zA-Z]+)(\(.+\))?(\!)\:/.test(message) || majorWords.some((word) => message.includes(word)),
-    )
-  ) {
+  else if (majorWords.some((word) => event.pull_request.title.includes(word))) {
     version = 'major';
   }
   // case: if wording for MINOR found
-  else if (messages.some((message) => minorWords.some((word) => message.includes(word)))) {
+  else if (minorWords.some((word) => event.pull_request.title.includes(word))) {
     version = 'minor';
   }
   // case: if wording for PATCH found
-  else if (patchWords && messages.some((message) => patchWords.some((word) => message.includes(word)))) {
+  else {
     version = 'patch';
   }
-  // case: if wording for PRE-RELEASE found
-  else if (
-    preReleaseWords &&
-    messages.some((message) =>
-      preReleaseWords.some((word) => {
-        if (message.includes(word)) {
-          foundWord = word;
-          return true;
-        } else {
-          return false;
-        }
-      }),
-    )
-  ) {
-    if (foundWord !== '') {
-      preid = foundWord.split('-')[1];
-    }
-    version = 'prerelease';
-  }
+  // // case: if wording for PRE-RELEASE found
+  // else if (
+  //   preReleaseWords &&
+  //   messages.some((message) =>
+  //     preReleaseWords.some((word) => {
+  //       if (message.includes(word)) {
+  //         foundWord = word;
+  //         return true;
+  //       } else {
+  //         return false;
+  //       }
+  //     }),
+  //   )
+  // ) {
+  //   if (foundWord !== '') {
+  //     preid = foundWord.split('-')[1];
+  //   }
+  //   version = 'prerelease';
+  // }
 
   console.log('version action after first waterfall:', version);
 
